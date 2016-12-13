@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 import ConfigParser
+import scipy.io
 import os
 import time
 
@@ -10,11 +11,13 @@ configParser = ConfigParser.RawConfigParser()
 configFilePath = 'config.cfg'
 configParser.read(configFilePath)
 #path parameters
+output_dir = configParser.get('path', 'output_dir')
 content_dir = configParser.get('path', 'content_dir')
 style_dir = configParser.get('path', 'style_dir')
 content_image_file = configParser.get('path', 'content_images')
 style_image_files = configParser.get('path', 'style_images')
 style_image_files = [s.strip() for s in style_image_files.split(',')]
+model_path = configParser.get('path', 'model_path')
 
 max_image_size = configParser.get('image_param', 'max_size')
 
@@ -22,6 +25,19 @@ model_mean = configParser.get('model_param', 'model_mean')
 model_mean = np.array([float(x.strip()) for x in model_mean.split(',')]).reshape((1,1,1,3))
 
 init_type = configParser.get('train_param', 'init_image')
+device = configParser.get('train_param', 'device')
+pooling_type = configParser.get('train_param', 'pooling_type')
+style_image_weights = configParser.get('train_param', 'style_weights')
+style_image_weights = [float(x.strip()) for x in style_image_weights.split(',')]
+
+style_layers = ['relu1_1', 'relu2_1', 'relu3_1', 'relu4_1', 'relu5_1']
+style_layer_weights =[0.2, 0.2, 0.2, 0.2, 0.2]
+content_weight = 0.5
+style_weight = 1e4
+content_weight = 5e0
+content_layers = ['conv4_2']
+content_layer_weights = [1.0]
+max_iterations = 500
 
 def resize(image):
     h, w, _ = image.shape
@@ -47,7 +63,64 @@ def main():
         tock = time.time()
         print('Time used: {}'.format(tock - tick))
 def transfer(content_image, style_image, init_image):
-    pass
+    with tf.device(device), tf.Session() as sess:
+        outputs = forward_input(init_image)
+        # style loss
+        style_loss = sum_style_losses(sess, outputs, style_image)
+
+        # content loss
+        content_loss = sum_content_losses(sess, outputs, content_image)
+
+
+
+        # loss weights
+        a = content_weight
+        b = style_weight
+
+        # total loss
+        L_total = a * content_loss + b * style_loss
+        print 'Initialization done. Begain training...'
+        optimizer = tf.contrib.opt.ScipyOptimizerInterface(
+            L_total, method='L-BFGS-B',
+            options={'maxiter': max_iterations,
+                     'disp': 10})
+
+        init_op = tf.initialize_all_variables()
+        sess.run(init_op)
+        sess.run(outputs['input'].assign(init_image))
+        optimizer.minimize(sess)
+
+
+        output_image = sess.run(outputs['input'])
+
+        image_path = os.path.join(output_dir, 'output.png')
+        output_image = restore_image(output_image, model_mean)
+        cv2.imwrite(image_path, output_image)
+
+def restore_image(image, mean):
+  image += mean
+  # shape (1, h, w, d) to (h, w, d)
+  image = image[0]
+  image = np.clip(image, 0, 255).astype('uint8')
+  # rgb to bgr
+  image = image[...,::-1]
+  return image
+
+
+def sum_style_losses(sess, outputs, style_images):
+  loss = 0.
+  for image, image_weights in zip(style_images, style_image_weights):
+    sess.run(outputs['input'].assign(image))
+    style_loss = 0.
+    for layer, weight in zip(style_layers, style_layer_weights):
+      a = sess.run(outputs[layer])
+      x = outputs[layer]
+      a = tf.convert_to_tensor(a)
+      style_loss += style_layer_loss(a, x) * weight
+    style_loss /= float(len(style_layers))
+    loss += (style_loss * image_weights)
+  loss /= float(len(style_images))
+  return loss
 
 def get_style_images(h,w,style_image_files):
     images = []
@@ -86,81 +159,130 @@ def get_init_image(type, content_image, style_image):
     elif type == 'noise':
         return content_image
 
-#
-# def build_vgg19(input_img):
-#     if args.verbose: print('\nBUILDING VGG-19 NETWORK')
-#     net = {}
-#     _, h, w, d = input_img.shape
-#
-#     if args.verbose: print('loading model weights...')
-#     vgg_rawnet = scipy.io.loadmat(args.model_weights)
-#     vgg_layers = vgg_rawnet['layers'][0]
-#     if args.verbose: print('constructing layers...')
-#     net['input'] = tf.Variable(np.zeros((1, h, w, d), dtype=np.float32))
-#
-#     if args.verbose: print('LAYER GROUP 1')
-#     net['conv1_1'] = conv_layer('conv1_1', net['input'], W=get_weights(vgg_layers, 0))
-#     net['relu1_1'] = relu_layer('relu1_1', net['conv1_1'], b=get_bias(vgg_layers, 0))
-#
-#     net['conv1_2'] = conv_layer('conv1_2', net['relu1_1'], W=get_weights(vgg_layers, 2))
-#     net['relu1_2'] = relu_layer('relu1_2', net['conv1_2'], b=get_bias(vgg_layers, 2))
-#
-#     net['pool1'] = pool_layer('pool1', net['relu1_2'])
-#
-#     if args.verbose: print('LAYER GROUP 2')
-#     net['conv2_1'] = conv_layer('conv2_1', net['pool1'], W=get_weights(vgg_layers, 5))
-#     net['relu2_1'] = relu_layer('relu2_1', net['conv2_1'], b=get_bias(vgg_layers, 5))
-#
-#     net['conv2_2'] = conv_layer('conv2_2', net['relu2_1'], W=get_weights(vgg_layers, 7))
-#     net['relu2_2'] = relu_layer('relu2_2', net['conv2_2'], b=get_bias(vgg_layers, 7))
-#
-#     net['pool2'] = pool_layer('pool2', net['relu2_2'])
-#
-#     if args.verbose: print('LAYER GROUP 3')
-#     net['conv3_1'] = conv_layer('conv3_1', net['pool2'], W=get_weights(vgg_layers, 10))
-#     net['relu3_1'] = relu_layer('relu3_1', net['conv3_1'], b=get_bias(vgg_layers, 10))
-#
-#     net['conv3_2'] = conv_layer('conv3_2', net['relu3_1'], W=get_weights(vgg_layers, 12))
-#     net['relu3_2'] = relu_layer('relu3_2', net['conv3_2'], b=get_bias(vgg_layers, 12))
-#
-#     net['conv3_3'] = conv_layer('conv3_3', net['relu3_2'], W=get_weights(vgg_layers, 14))
-#     net['relu3_3'] = relu_layer('relu3_3', net['conv3_3'], b=get_bias(vgg_layers, 14))
-#
-#     net['conv3_4'] = conv_layer('conv3_4', net['relu3_3'], W=get_weights(vgg_layers, 16))
-#     net['relu3_4'] = relu_layer('relu3_4', net['conv3_4'], b=get_bias(vgg_layers, 16))
-#
-#     net['pool3'] = pool_layer('pool3', net['relu3_4'])
-#
-#     if args.verbose: print('LAYER GROUP 4')
-#     net['conv4_1'] = conv_layer('conv4_1', net['pool3'], W=get_weights(vgg_layers, 19))
-#     net['relu4_1'] = relu_layer('relu4_1', net['conv4_1'], b=get_bias(vgg_layers, 19))
-#
-#     net['conv4_2'] = conv_layer('conv4_2', net['relu4_1'], W=get_weights(vgg_layers, 21))
-#     net['relu4_2'] = relu_layer('relu4_2', net['conv4_2'], b=get_bias(vgg_layers, 21))
-#
-#     net['conv4_3'] = conv_layer('conv4_3', net['relu4_2'], W=get_weights(vgg_layers, 23))
-#     net['relu4_3'] = relu_layer('relu4_3', net['conv4_3'], b=get_bias(vgg_layers, 23))
-#
-#     net['conv4_4'] = conv_layer('conv4_4', net['relu4_3'], W=get_weights(vgg_layers, 25))
-#     net['relu4_4'] = relu_layer('relu4_4', net['conv4_4'], b=get_bias(vgg_layers, 25))
-#
-#     net['pool4'] = pool_layer('pool4', net['relu4_4'])
-#
-#     if args.verbose: print('LAYER GROUP 5')
-#     net['conv5_1'] = conv_layer('conv5_1', net['pool4'], W=get_weights(vgg_layers, 28))
-#     net['relu5_1'] = relu_layer('relu5_1', net['conv5_1'], b=get_bias(vgg_layers, 28))
-#
-#     net['conv5_2'] = conv_layer('conv5_2', net['relu5_1'], W=get_weights(vgg_layers, 30))
-#     net['relu5_2'] = relu_layer('relu5_2', net['conv5_2'], b=get_bias(vgg_layers, 30))
-#
-#     net['conv5_3'] = conv_layer('conv5_3', net['relu5_2'], W=get_weights(vgg_layers, 32))
-#     net['relu5_3'] = relu_layer('relu5_3', net['conv5_3'], b=get_bias(vgg_layers, 32))
-#
-#     net['conv5_4'] = conv_layer('conv5_4', net['relu5_3'], W=get_weights(vgg_layers, 34))
-#     net['relu5_4'] = relu_layer('relu5_4', net['conv5_4'], b=get_bias(vgg_layers, 34))
-#
-#     net['pool5'] = pool_layer('pool5', net['relu5_4'])
-#
-#     return net
+def sum_content_losses(sess, outputs, content_image):
+  sess.run(outputs['input'].assign(content_image))
+  content_loss = 0.
+  for layer, weight in zip(content_layers, content_layer_weights):
+    p = sess.run(outputs[layer])
+    x = outputs[layer]
+    p = tf.convert_to_tensor(p)
+    content_loss += content_layer_loss(p, x) * weight
+  content_loss /= float(len(content_layers))
+  return content_loss
+
+def get_layer_weights(layers, i):
+  weights = layers[i][0][0][2][0][0]
+  W = tf.constant(weights)
+  return W
+
+def get_layer_bias(layers, i):
+  bias = layers[i][0][0][2][0][1]
+  b = tf.constant(np.reshape(bias, (bias.size)))
+  return b
+
+def forward_input(input_image):
+    _, h, w, d = input_image.shape
+    outputs = {}
+    print 'Intializing variables...'
+    model = scipy.io.loadmat(model_path)
+    layers = model['layers'][0]
+
+    outputs['input'] = tf.Variable(np.zeros((1, h, w, d), dtype=np.float32))
+    outputs['conv1_1'] = tf.nn.conv2d(outputs['input'], get_layer_weights(layers, 0), strides=[1, 1, 1, 1], padding='SAME')
+    outputs['relu1_1'] = tf.nn.relu(outputs['conv1_1'] + get_layer_bias(layers, 0))
+    outputs['conv1_2'] = tf.nn.conv2d(outputs['relu1_1'], get_layer_weights(layers, 2), strides=[1, 1, 1, 1], padding='SAME')
+    outputs['relu1_2'] = tf.nn.relu(outputs['conv1_2'] + get_layer_bias(layers, 2))
+    outputs['pool1'] = pooling(outputs['relu1_2'])
+
+    outputs['conv2_1'] = tf.nn.conv2d(outputs['pool1'], get_layer_weights(layers, 5), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu2_1'] = tf.nn.relu(outputs['conv2_1'] + get_layer_bias(layers, 5))
+    outputs['conv2_2'] = tf.nn.conv2d(outputs['relu2_1'], get_layer_weights(layers, 7), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu2_2'] = tf.nn.relu(outputs['conv2_2'] + get_layer_bias(layers, 7))
+    outputs['pool2'] = pooling(outputs['relu2_2'])
+
+
+
+    outputs['conv3_1'] = tf.nn.conv2d(outputs['pool2'], get_layer_weights(layers, 10), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu3_1'] = tf.nn.relu(outputs['conv3_1'] + get_layer_bias(layers, 10))
+    outputs['conv3_2'] = tf.nn.conv2d(outputs['relu3_1'], get_layer_weights(layers, 12), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu3_2'] = tf.nn.relu(outputs['conv3_2'] + get_layer_bias(layers, 12))
+
+    outputs['conv3_3'] = tf.nn.conv2d(outputs['relu3_2'], get_layer_weights(layers, 14), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu3_3'] = tf.nn.relu(outputs['conv3_3'] + get_layer_bias(layers, 14))
+    outputs['conv3_4'] = tf.nn.conv2d(outputs['relu3_3'], get_layer_weights(layers, 16), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu3_4'] = tf.nn.relu(outputs['conv3_4'] + get_layer_bias(layers, 16))
+    outputs['pool3'] = pooling( outputs['relu3_4'])
+
+    outputs['conv4_1'] = tf.nn.conv2d(outputs['pool3'], get_layer_weights(layers, 19), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu4_1'] = tf.nn.relu(outputs['conv4_1'] + get_layer_bias(layers, 19))
+    outputs['conv4_2'] = tf.nn.conv2d(outputs['relu4_1'], get_layer_weights(layers, 21), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu4_2'] = tf.nn.relu(outputs['conv4_2'] + get_layer_bias(layers, 21))
+
+    outputs['conv4_3'] = tf.nn.conv2d(outputs['relu4_2'], get_layer_weights(layers, 23), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu4_3'] = tf.nn.relu(outputs['conv4_3'] + get_layer_bias(layers, 23))
+    outputs['conv4_4'] = tf.nn.conv2d(outputs['relu4_3'], get_layer_weights(layers, 25), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu4_4'] = tf.nn.relu(outputs['conv4_4'] + get_layer_bias(layers, 25))
+    outputs['pool4'] = pooling(outputs['relu4_4'])
+
+    outputs['conv5_1'] = tf.nn.conv2d(outputs['pool4'], get_layer_weights(layers, 28), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu5_1'] = tf.nn.relu(outputs['conv5_1'] + get_layer_bias(layers, 28))
+    outputs['conv5_2'] = tf.nn.conv2d(outputs['relu5_1'], get_layer_weights(layers, 30), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu5_2'] = tf.nn.relu(outputs['conv5_2'] + get_layer_bias(layers, 30))
+
+    outputs['conv5_3'] = tf.nn.conv2d(outputs['relu5_2'], get_layer_weights(layers, 32), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu5_3'] = tf.nn.relu(outputs['conv5_3'] + get_layer_bias(layers, 32))
+    outputs['conv5_4'] = tf.nn.conv2d(outputs['relu5_3'], get_layer_weights(layers, 34), strides=[1, 1, 1, 1],
+                                      padding='SAME')
+    outputs['relu5_4'] = tf.nn.relu(outputs['conv5_4'] + get_layer_bias(layers, 34))
+    outputs['pool5'] = pooling(outputs['relu5_4'])
+
+    return outputs
+
+def style_layer_loss(a, x):
+  _, h, w, d = a.get_shape()
+  M = h.value * w.value
+  N = d.value
+  A = gram_matrix(a, M, N)
+  G = gram_matrix(x, M, N)
+  loss = (1./(4 * N**2 * M**2)) * tf.reduce_sum(tf.pow((G - A), 2))
+  return loss
+
+def content_layer_loss(p, x):
+  _, h, w, d = p.get_shape()
+  M = h.value * w.value
+  N = d.value
+  K = 1. / (2. * N**0.5 * M**0.5)
+  loss = K * tf.reduce_sum(tf.pow((x - p), 2))
+  return loss
+
+
+def gram_matrix(x, area, depth):
+  F = tf.reshape(x, (area, depth))
+  G = tf.matmul(tf.transpose(F), F)
+  return G
+
+def pooling(layer_input):
+  if pooling_type == 'avg':
+    pool = tf.nn.avg_pool(layer_input, ksize=[1, 2, 2, 1],
+      strides=[1, 2, 2, 1], padding='SAME')
+  elif pooling_type == 'max':
+    pool = tf.nn.max_pool(layer_input, ksize=[1, 2, 2, 1],
+      strides=[1, 2, 2, 1], padding='SAME')
+  return pool
+
+
 if __name__ == "__main__":
     main()
