@@ -37,7 +37,7 @@ content_layers = configParser.get('train_param', 'content_layers')
 content_layers = [s.strip() for s in content_layers.split(',')]
 content_layer_weights = configParser.get('train_param', 'content_layer_weights')
 content_layer_weights = [float(x.strip()) for x in content_layer_weights.split(',')]
-
+noise_ratio = 1
 
 def resize(image):
     h, w, _ = image.shape
@@ -156,8 +156,13 @@ def get_init_image(type, content_image, style_image):
     elif type == 'style':
         return style_image
     elif type == 'noise':
-        return content_image
+        return get_noise_image(noise_ratio, content_image)
 
+def get_noise_image(noise_ratio, content_image):
+  np.random.seed(0)
+  noise_image = np.random.uniform(-20., 20., content_image.shape).astype(np.float32)
+  image = noise_ratio * noise_image + (1.-noise_ratio) * content_image
+  return image
 
 def sum_content_losses(sess, outputs, content_image):
     sess.run(outputs['input'].assign(content_image))
