@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import ConfigParser
 import os
+import time
 
 # parameters
 configParser = ConfigParser.RawConfigParser()
@@ -11,13 +12,16 @@ configParser.read(configFilePath)
 #path parameters
 content_dir = configParser.get('path', 'content_dir')
 style_dir = configParser.get('path', 'style_dir')
-content_images = configParser.get('path', 'content_images')
-style_images = configParser.get('path', 'style_images')
+content_image_file = configParser.get('path', 'content_images')
+style_image_files = configParser.get('path', 'style_images')
+style_image_files = [s.strip() for s in style_image_files.split(',')]
 
 max_image_size = configParser.get('image_param', 'max_size')
 
 model_mean = configParser.get('model_param', 'model_mean')
-model_mean = np.array([float(x) for x in model_mean.split(',')]).reshape((1,1,1,3))
+model_mean = np.array([float(x.strip()) for x in model_mean.split(',')]).reshape((1,1,1,3))
+
+init_type = configParser.get('train_param', 'init_image')
 
 def resize(image):
     h, w, _ = image.shape
@@ -31,7 +35,35 @@ def resize(image):
     return image
 
 def main():
-    content_image = get_content_image(content_images)
+    content_image = get_content_image(content_image_file)
+    _, h, w, _ = content_image.shape
+    style_images = get_style_images(h,w,style_image_files)
+    print 'Images loaded...'
+    with tf.Graph().as_default():
+        print'Begain style transfer...'
+        init_image = get_init_image(init_type, content_image, style_images[0])
+        tick = time.time()
+        transfer(content_image, style_images, init_image)
+        tock = time.time()
+        print('Time used: {}'.format(tock - tick))
+def transfer(content_image, style_image, init_image):
+    pass
+
+def get_style_images(h,w,style_image_files):
+    images = []
+    for file in style_image_files:
+        path = os.path.join(style_dir, file)
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        image = image.astype(np.float32)
+        image = cv2.resize(image, dsize=(w, h), interpolation=cv2.INTER_AREA)
+        # bgr to rgb
+        image = image[..., ::-1]
+        # add new axis
+        image = image[np.newaxis, :, :, :]
+        image -= model_mean
+        images.append(image)
+    return images
+
 def get_content_image(content_images):
   path = os.path.join(content_dir, content_images)
   image = cv2.imread(path, cv2.IMREAD_COLOR)
@@ -46,6 +78,13 @@ def get_content_image(content_images):
   image -= model_mean
   return image
 
+def get_init_image(type, content_image, style_image):
+    if type == 'content':
+        return content_image
+    elif type == 'style':
+        return style_image
+    elif type == 'noise':
+        return content_image
 
 #
 # def build_vgg19(input_img):
